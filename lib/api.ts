@@ -14,7 +14,7 @@ import type {
 
 // Configuration de base d'Axios
 const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL || "https://api.harrellsoftconnect.com/api";
+  process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
 
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -254,7 +254,7 @@ export const authAPI = {
       const response = await api.post("/auth/login", { email, password });
       return response.data;
     } catch (error) {
-      console.log("[v0] API login failed, using mock mode");
+      // API login failed, try mock fallback
       // Mock login for demo
       const user = MOCK_USERS.find(
         (u) => u.email === email && u.password === password,

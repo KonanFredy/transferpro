@@ -29,8 +29,15 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { clientsAPI, paysAPI, devisesAPI, tauxAPI, fraisAPI } from "@/lib/api";
-import type { FraisSettings } from "@/lib/types";
+import {
+  clientsAPI,
+  paysAPI,
+  devisesAPI,
+  tauxAPI,
+  fraisAPI,
+  transactionsAPI,
+} from "@/lib/api";
+import { FraisSettings } from "@/lib/types";
 import type {
   Transaction,
   TransactionType,
@@ -73,6 +80,7 @@ export function NewTransactionDialog({
   const [applyFees, setApplyFees] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [selectedTransferNumero, setSelectedTransferNumero] = useState("");
 
   // Data from API
   const [clients, setClients] = useState<Client[]>(propClients || []);
@@ -81,6 +89,7 @@ export function NewTransactionDialog({
   const [tauxChange, setTauxChange] = useState<TauxChange[]>(
     propTauxChange || [],
   );
+  const [pendingTransfers, setPendingTransfers] = useState<Transaction[]>([]);
   const [feeSettings, setFeeSettings] = useState<FraisSettings>({
     fraisActifs: true,
     fraisMinimum: 0,
@@ -94,19 +103,29 @@ export function NewTransactionDialog({
 
     setIsLoading(true);
     try {
-      const [clientsData, paysData, devisesData, tauxData, fraisData] =
-        await Promise.all([
-          propClients ? Promise.resolve(propClients) : clientsAPI.getAll(),
-          propPays ? Promise.resolve(propPays) : paysAPI.getAll(),
-          propDevises ? Promise.resolve(propDevises) : devisesAPI.getAll(),
-          propTauxChange ? Promise.resolve(propTauxChange) : tauxAPI.getAll(),
-          fraisAPI.getSettings().catch(() => feeSettings),
-        ]);
+      const [
+        clientsData,
+        paysData,
+        devisesData,
+        tauxData,
+        fraisData,
+        transfersData,
+      ] = await Promise.all([
+        propClients ? Promise.resolve(propClients) : clientsAPI.getAll(),
+        propPays ? Promise.resolve(propPays) : paysAPI.getAll(),
+        propDevises ? Promise.resolve(propDevises) : devisesAPI.getAll(),
+        propTauxChange ? Promise.resolve(propTauxChange) : tauxAPI.getAll(),
+        fraisAPI.getSettings().catch(() => feeSettings),
+        transactionsAPI
+          .getAll({ type: "transfert", status: "validee" })
+          .catch(() => []),
+      ]);
       setClients(clientsData);
       setPays(paysData);
       setDevises(devisesData);
       setTauxChange(tauxData);
       setFeeSettings(fraisData);
+      setPendingTransfers(Array.isArray(transfersData) ? transfersData : []);
     } catch (error) {
       console.error("Error loading transaction form data:", error);
     } finally {
@@ -127,6 +146,49 @@ export function NewTransactionDialog({
     if (propDevises) setDevises(propDevises);
     if (propTauxChange) setTauxChange(propTauxChange);
   }, [propClients, propPays, propDevises, propTauxChange]);
+
+  // Auto-fill pays d'envoi when emetteur is selected (transfert)
+  useEffect(() => {
+    if (clientEmetteurId && type === "transfert") {
+      const client = clients.find((c) => c.id === clientEmetteurId);
+      if (client?.paysId) {
+        setPaysEnvoiId(client.paysId);
+      }
+    }
+  }, [clientEmetteurId, clients, type]);
+
+  // Auto-fill pays de reception when beneficiaire is selected (transfert)
+  useEffect(() => {
+    if (clientBeneficiaireId && type === "transfert") {
+      const client = clients.find((c) => c.id === clientBeneficiaireId);
+      if (client?.paysId) {
+        setPaysReceptionId(client.paysId);
+      }
+    }
+  }, [clientBeneficiaireId, clients, type]);
+
+  // Auto-fill fields when a transfer number is selected (retrait)
+  useEffect(() => {
+    if (selectedTransferNumero && type === "retrait") {
+      const transfer = pendingTransfers.find(
+        (t) => t.numero === selectedTransferNumero,
+      );
+      if (transfer) {
+        // Set the beneficiary client as the one doing the withdrawal
+        if (transfer.clientBeneficiaireId) {
+          setClientEmetteurId(transfer.clientBeneficiaireId);
+        }
+        // Set the reception country
+        if (transfer.paysReceptionId) {
+          setPaysEnvoiId(transfer.paysReceptionId);
+        }
+        // Set the amount to receive
+        if (transfer.montantRecu) {
+          setMontantEnvoye(String(transfer.montantRecu));
+        }
+      }
+    }
+  }, [selectedTransferNumero, pendingTransfers, type]);
 
   const activeClients = clients.filter((c) => c.actif);
   const activePays = pays.filter((p) => p.actif);
@@ -278,6 +340,7 @@ export function NewTransactionDialog({
     setPaysReceptionId("");
     setMontantEnvoye("");
     setApplyFees(true);
+    setSelectedTransferNumero("");
   };
 
   const isValid = () => {
@@ -526,43 +589,82 @@ export function NewTransactionDialog({
 
           <TabsContent value="retrait" className="space-y-4 mt-4">
             <div className="space-y-2">
-              <Label>Client</Label>
+              <Label>Numero de transfert</Label>
               <Select
-                value={clientEmetteurId}
-                onValueChange={setClientEmetteurId}
+                value={selectedTransferNumero}
+                onValueChange={setSelectedTransferNumero}
               >
                 <SelectTrigger>
-                  <SelectValue placeholder="Selectionnez un client" />
+                  <SelectValue placeholder="Selectionnez un numero de transfert" />
                 </SelectTrigger>
                 <SelectContent>
-                  {activeClients.map((client) => (
-                    <SelectItem key={client.id} value={client.id}>
-                      {client.prenom} {client.nom}
-                    </SelectItem>
-                  ))}
+                  {pendingTransfers.length === 0 ? (
+                    <div className="px-2 py-4 text-sm text-muted-foreground text-center">
+                      Aucun transfert disponible pour retrait
+                    </div>
+                  ) : (
+                    pendingTransfers.map((t) => (
+                      <SelectItem key={t.id} value={t.numero}>
+                        {t.numero} - {t.clientBeneficiaireNom || "N/A"} (
+                        {t.montantRecu?.toLocaleString("fr-FR")}{" "}
+                        {t.paysReceptionNom || ""})
+                      </SelectItem>
+                    ))
+                  )}
                 </SelectContent>
               </Select>
-            </div>
-
-            <div className="space-y-2">
-              <Label>Pays</Label>
-              <Select value={paysEnvoiId} onValueChange={setPaysEnvoiId}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Selectionnez un pays" />
-                </SelectTrigger>
-                <SelectContent>
-                  {activePays.map((p) => (
-                    <SelectItem key={p.id} value={p.id}>
-                      {p.nom}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              {deviseEnvoi && (
+              {pendingTransfers.length > 0 && (
                 <p className="text-xs text-muted-foreground">
-                  Devise: {deviseEnvoi.nom} ({deviseEnvoi.codeISO})
+                  {pendingTransfers.length} transfert(s) disponible(s) pour
+                  retrait
                 </p>
               )}
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>Client Beneficiaire</Label>
+                <Select
+                  value={clientEmetteurId}
+                  onValueChange={setClientEmetteurId}
+                  disabled={!!selectedTransferNumero}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Rempli automatiquement" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {activeClients.map((client) => (
+                      <SelectItem key={client.id} value={client.id}>
+                        {client.prenom} {client.nom}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>Pays</Label>
+                <Select
+                  value={paysEnvoiId}
+                  onValueChange={setPaysEnvoiId}
+                  disabled={!!selectedTransferNumero}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Rempli automatiquement" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {activePays.map((p) => (
+                      <SelectItem key={p.id} value={p.id}>
+                        {p.nom}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {deviseEnvoi && (
+                  <p className="text-xs text-muted-foreground">
+                    Devise: {deviseEnvoi.nom} ({deviseEnvoi.codeISO})
+                  </p>
+                )}
+              </div>
             </div>
 
             <div className="grid grid-cols-2 gap-4">
@@ -573,6 +675,8 @@ export function NewTransactionDialog({
                   placeholder="0.00"
                   value={montantEnvoye}
                   onChange={(e) => setMontantEnvoye(e.target.value)}
+                  readOnly={!!selectedTransferNumero}
+                  className={selectedTransferNumero ? "bg-muted" : ""}
                 />
               </div>
               <div className="space-y-2">
